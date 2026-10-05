@@ -4,7 +4,7 @@ from queue import Queue
 import sys
 import os
 
-# Ensure BCC module can be located if installed in system dist-packages
+# Ensure the virtual environment can find the globally installed bcc module
 dist_packages = '/usr/lib/python3/dist-packages'
 if dist_packages not in sys.path and os.path.exists(dist_packages):
     sys.path.append(dist_packages)
@@ -69,6 +69,68 @@ class EBPFMonitor:
         self.bpf = None
         self.running = False
         self.thread = None
-
+        
     def set_root_pid(self, pid: int):
+        # Tracking is now fully handled by ProcessTree.
         pass
+
+    def start(self):
+        if BPF is None:
+            return
+
+        try:
+            self.bpf = BPF(text=bpf_text, cflags=["-Wno-duplicate-decl-specifier"])
+            self.bpf["events"].open_perf_buffer(self._handle_event)
+            self.running = True
+            
+            self.thread = threading.Thread(target=self._poll_loop, daemon=True)
+            self.thread.start()
+            print("eBPF Process Monitor started successfully.")
+        except Exception as e:
+            print(f"Failed to start eBPF monitor: {e}")
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2)
+            
+        # Ensure we poll one last time before exiting to catch any stragglers
+        try:
+            self.bpf.perf_buffer_poll(timeout=100)
+        except:
+            pass
+
+    def _poll_loop(self):
+        while self.running:
+            try:
+                self.bpf.perf_buffer_poll(timeout=100)
+            except Exception:
+                pass
+
+    def _handle_event(self, cpu, data, size):
+        event = self.bpf["events"].event(data)
+        
+        pid = event.pid
+        ppid = event.ppid
+        ev_type = event.type
+        comm = event.comm.decode('utf-8', 'replace')
+
+        # Map to internal EventType
+        if ev_type == 1:
+            t = EventType.PROCESS_EXEC
+        elif ev_type == 2:
+            t = EventType.PROCESS_FORK
+        elif ev_type == 3:
+            t = EventType.PROCESS_EXIT
+        else:
+            return
+
+        self.event_queue.put(Event(
+            analysis_id="",
+            container_id="",
+            timestamp=time.time(),
+            type=t,
+            pid=pid,
+            ppid=ppid,
+            process_name=comm
+        ))
