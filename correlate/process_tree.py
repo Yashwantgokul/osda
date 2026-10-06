@@ -49,3 +49,22 @@ class ProcessTree:
                 pnode.add_child(self.nodes[event.pid])
                 
             self.nodes[event.pid].events.append(event)
+
+    def render(self) -> str:
+        if not self.root_pid or self.root_pid not in self.nodes:
+            return "No Sandbox processes captured."
+            
+        output = []
+        
+        def traverse(node: ProcessNode, prefix: str = ""):
+            output.append(f"{prefix}└── {node.name} (PID: {node.pid})")
+            for i, child in enumerate(node.children):
+                if i == len(node.children) - 1:
+                    traverse(child, prefix + "    ")
+                else:
+                    traverse(child, prefix + "│   ")
+                    
+        # Start traversal ONLY from the sandbox root PID
+        traverse(self.nodes[self.root_pid])
+            
+        return "\n".join(output)
