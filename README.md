@@ -180,3 +180,25 @@ Analysis SS-1788683859 completed.
 ## 🛡️ License
 
 This project is licensed under the MIT License.
+# Security evaluation
+
+Analysis reports include the sandbox process tree, flagged processes, a capped
+0–100 heuristic score, findings, and recommendations. Verdict thresholds are
+SAFE (0–15), SUSPICIOUS (16–49), and MALICIOUS (50–100). Repeated observations of
+the same rule for the same PID count once. Dual-use utilities can trigger rules;
+the verdict describes observed behavior and is not proof that a file is safe or harmful.
+
+The evaluator filters host process events to the sandbox root and its descendants.
+Workspace filesystem monitoring starts after the target is copied and stops before
+cleanup. Other container paths, including `/tmp`, are not monitored by the workspace
+observer. Network behavior is inferred from command arguments, not packet capture.
+
+On Linux with BCC, successful `execve` events include up to eight arguments of
+96 bytes each (including the terminator). Missing or truncated arguments appear
+as report limitations. `execveat`, shell built-ins, and script internals are not
+captured as separate commands. Very short containers may exit before Docker's root
+PID is inspected; reports with no captured executions explicitly disclose incomplete
+coverage. ANSI verdict colors are enabled for terminals unless `NO_COLOR` is set.
+
+Run portable evaluator checks with `python -m unittest discover -s tests -v`.
+Live eBPF compilation and container capture require a Linux host with BCC and Docker.

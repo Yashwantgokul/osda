@@ -26,39 +26,90 @@ struct event_t {
     u32 ppid;
     u32 type; // 1=EXEC, 2=FORK, 3=EXIT
     char comm[TASK_COMM_LEN];
+    char argv[8][96];
+    u32 argv_truncated;
 };
 
 BPF_PERF_OUTPUT(events);
+BPF_HASH(exec_args, u64, struct event_t);
+BPF_PERCPU_ARRAY(exec_scratch, struct event_t, 1);
+
+TRACEPOINT_PROBE(syscalls, sys_enter_execve) {
+    u32 zero = 0;
+    u64 key = bpf_get_current_pid_tgid();
+    struct event_t *event = exec_scratch.lookup(&zero);
+    if (!event) return 0;
+    event->argv_truncated = 0;
+    #pragma unroll
+    for (int i = 0; i < 8; i++) event->argv[i][0] = 0;
+    #pragma unroll
+    for (int i = 0; i < 8; i++) {
+        const char *arg = 0;
+        event->argv[i][0] = 0;
+        bpf_probe_read_user(&arg, sizeof(arg), &args->argv[i]);
+        if (!arg) break;
+        if (arg) {
+            int length = bpf_probe_read_user_str(event->argv[i], 96, arg);
+            if (length >= 96) event->argv_truncated = 1;
+        }
+    }
+    const char *extra = 0;
+    if (event->argv[7][0]) bpf_probe_read_user(&extra, sizeof(extra), &args->argv[8]);
+    if (extra) event->argv_truncated = 1;
+    exec_args.update(&key, event);
+    return 0;
+}
+
+TRACEPOINT_PROBE(syscalls, sys_exit_execve) {
+    u64 key = bpf_get_current_pid_tgid();
+    exec_args.delete(&key);
+    return 0;
+}
 
 TRACEPOINT_PROBE(sched, sched_process_exec) {
-    struct event_t event = {};
-    event.pid = bpf_get_current_pid_tgid() >> 32;
+    u32 zero = 0;
+    u64 key = bpf_get_current_pid_tgid();
+    struct event_t *saved = exec_args.lookup(&key);
+    struct event_t *scratch = exec_scratch.lookup(&zero);
+    if (!scratch) return 0;
+    if (!saved) {
+        #pragma unroll
+        for (int i = 0; i < 8; i++) scratch->argv[i][0] = 0;
+        scratch->argv_truncated = 1;
+    }
+    struct event_t *event = saved ? saved : scratch;
+    event->pid = bpf_get_current_pid_tgid() >> 32;
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    event.ppid = task->real_parent->tgid;
-    event.type = 1;
-    bpf_get_current_comm(&event.comm, sizeof(event.comm));
-    events.perf_submit(args, &event, sizeof(event));
+    event->ppid = task->real_parent->tgid;
+    event->type = 1;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+    events.perf_submit(args, event, sizeof(*event));
+    exec_args.delete(&key);
     return 0;
 }
 
 TRACEPOINT_PROBE(sched, sched_process_fork) {
-    struct event_t event = {};
-    event.pid = args->child_pid;
-    event.ppid = args->parent_pid;
-    event.type = 2;
-    bpf_get_current_comm(&event.comm, sizeof(event.comm));
-    events.perf_submit(args, &event, sizeof(event));
+    u32 zero = 0;
+    struct event_t *event = exec_scratch.lookup(&zero);
+    if (!event) return 0;
+    event->pid = args->child_pid;
+    event->ppid = args->parent_pid;
+    event->type = 2;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+    events.perf_submit(args, event, sizeof(*event));
     return 0;
 }
 
 TRACEPOINT_PROBE(sched, sched_process_exit) {
-    struct event_t event = {};
-    event.pid = bpf_get_current_pid_tgid() >> 32;
+    u32 zero = 0;
+    struct event_t *event = exec_scratch.lookup(&zero);
+    if (!event) return 0;
+    event->pid = bpf_get_current_pid_tgid() >> 32;
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    event.ppid = task->real_parent->tgid;
-    event.type = 3;
-    bpf_get_current_comm(&event.comm, sizeof(event.comm));
-    events.perf_submit(args, &event, sizeof(event));
+    event->ppid = task->real_parent->tgid;
+    event->type = 3;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+    events.perf_submit(args, event, sizeof(*event));
     return 0;
 }
 """
@@ -132,5 +183,8 @@ class EBPFMonitor:
             type=t,
             pid=pid,
             ppid=ppid,
-            process_name=comm
+            process_name=comm,
+            argv=[bytes(arg).split(b'\0', 1)[0].decode('utf-8', 'replace')
+                  for arg in event.argv if bytes(arg).split(b'\0', 1)[0]] if ev_type == 1 else None,
+            argv_truncated=bool(event.argv_truncated) if ev_type == 1 else False
         ))

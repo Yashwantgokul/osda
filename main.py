@@ -7,6 +7,8 @@ from queue import Queue
 
 from monitors.ebpf_process import EBPFMonitor
 from correlate.process_tree import ProcessTree
+from correlate.evaluator import SecurityEvaluator
+from monitors.fs_monitor import FSMonitor
 from report.generator import Generator
 
 def main():
@@ -82,8 +84,12 @@ def main():
     container.pull_image()
     
     container.create(cmd)
+    fs_monitor = FSMonitor(ws.path, analysis_id, event_queue)
+    fs_monitor.update_container_id(container.container_id)
+    fs_monitor.start()
     
     # Start container and get its host root PID
+    execution_start = time.monotonic()
     container.start()
     
     try:
@@ -108,6 +114,7 @@ def main():
     
     print("Waiting for container to finish (max 30s)...")
     container.wait(timeout=30)
+    execution_duration = time.monotonic() - execution_start
     
     if container.container:
         try:
@@ -122,6 +129,7 @@ def main():
     time.sleep(0.5)
             
     ebpf_monitor.stop()
+    fs_monitor.stop()
     
     container.cleanup()
     ws.cleanup()
@@ -130,9 +138,8 @@ def main():
     event_queue.put(None)
     consumer.join()
     
-    print(reporter.generate(analysis_id))
-    print("\nPROCESS TREE\n------------")
-    print(tree.render())
+    evaluation = SecurityEvaluator(tree, reporter.events).evaluate()
+    print(reporter.generate(analysis_id, tree, evaluation, filename, execution_duration))
     
     print(f"\nAnalysis {analysis_id} completed.")
 

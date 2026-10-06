@@ -34,6 +34,8 @@ class Event:
     # Network attributes
     remote_address: Optional[str] = None
     remote_port: Optional[int] = None
+    argv: Optional[list[str]] = None
+    argv_truncated: bool = False
 
     def __str__(self):
         if self.pid is not None and self.ppid is not None:

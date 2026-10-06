@@ -50,19 +50,31 @@ class ProcessTree:
                 
             self.nodes[event.pid].events.append(event)
 
-    def render(self) -> str:
+    def sandbox_pids(self):
+        pids = {self.root_pid} if self.root_pid and self.root_pid > 0 else set()
+        while True:
+            descendants = {pid for pid, node in self.nodes.items() if node.ppid in pids}
+            if descendants <= pids:
+                return pids
+            pids.update(descendants)
+
+    def render(self, findings=()) -> str:
         if not self.root_pid or self.root_pid not in self.nodes:
             return "No Sandbox processes captured."
             
         output = []
         
-        def traverse(node: ProcessNode, prefix: str = ""):
-            output.append(f"{prefix}└── {node.name} (PID: {node.pid})")
-            for i, child in enumerate(node.children):
-                if i == len(node.children) - 1:
-                    traverse(child, prefix + "    ")
-                else:
-                    traverse(child, prefix + "│   ")
+        visited = set()
+        def traverse(node, prefix="", last=True):
+            if node.pid in visited:
+                return
+            visited.add(node.pid)
+            flags = sorted({f.rule for f in findings if f.pid == node.pid})
+            suffix = f" [FLAGGED: {', '.join(flags)}]" if flags else ""
+            output.append(f"{prefix}{'└── ' if last else '├── '}{node.name} (PID: {node.pid}){suffix}")
+            children = [n for n in self.nodes.values() if n.ppid == node.pid and n.pid != node.pid]
+            for i, child in enumerate(children):
+                traverse(child, prefix + ("    " if last else "│   "), i == len(children) - 1)
                     
         # Start traversal ONLY from the sandbox root PID
         traverse(self.nodes[self.root_pid])
