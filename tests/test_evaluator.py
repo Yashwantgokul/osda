@@ -49,6 +49,32 @@ class EvaluationTests(unittest.TestCase):
         self.assertIn("Verdict: SUSPICIOUS", report)
         self.assertNotIn("\033", report)
 
+    def test_namespace_correlation(self):
+        # eBPF reports initial-namespace PIDs, which need not share a numbering
+        # space with the root PID Docker reports, so events are attributed by
+        # PID namespace instead of by ancestry from that PID.
+        container_ns, host_ns = 4026532999, 4026532212
+        tree = ProcessTree("test")
+        tree.set_container_pid_ns(container_ns)
+        events = [
+            Event("test", "container", 0, EventType.PROCESS_EXEC, 50000, 49999, "bash",
+                  argv=["bash", "/workspace/suspicious.sh"], pid_ns=container_ns),
+            Event("test", "container", 1, EventType.PROCESS_EXEC, 50001, 50000, "curl",
+                  argv=["curl", "-s", "http://example.com"], pid_ns=container_ns),
+            # Unrelated host process that the kernel probes also pick up.
+            Event("test", "container", 2, EventType.PROCESS_EXEC, 777, 1, "nc",
+                  argv=["nc", "-e", "sh"], pid_ns=host_ns),
+        ]
+        for event in events:
+            tree.add_event(event)
+        self.assertEqual(tree.sandbox_pids(), {50000, 50001})
+        self.assertEqual(tree.root_pids(), [50000])
+        result = SecurityEvaluator(tree, events).evaluate()
+        self.assertEqual([f.rule for f in result.findings], ["download"])
+        report = tree.render(result.findings)
+        self.assertIn("bash (PID: 50000)", report)
+        self.assertIn("curl (PID: 50001) [FLAGGED: download]", report)
+
     def test_missing_telemetry(self):
         _, _, result = self.evaluate([])
         self.assertTrue(any("No sandbox executions" in item for item in result.limitations))

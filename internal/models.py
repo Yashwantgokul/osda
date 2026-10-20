@@ -37,6 +37,10 @@ class Event:
     argv: Optional[list[str]] = None
     argv_truncated: bool = False
 
+    # Inode of the PID namespace the process ran in, used to attribute events to
+    # the sandbox when eBPF and Docker do not share a PID numbering space.
+    pid_ns: Optional[int] = None
+
     def __str__(self):
         if self.pid is not None and self.ppid is not None:
             return f"[{self.type.value}] - {self.process_name} (PID: {self.pid} PPID: {self.ppid})"

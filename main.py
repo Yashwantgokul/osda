@@ -106,8 +106,14 @@ def main():
     # Pass the identified root PID to the event correlator
     ebpf_monitor.set_root_pid(root_pid)
     
-    # 2. Feed to ProcessTree for rendering
-    tree.set_root_pid(root_pid)
+    # 2. Feed to ProcessTree for rendering. eBPF reports initial-namespace PIDs, which
+    # differ from Docker's whenever the daemon itself runs in a nested PID namespace
+    # (as it does inside WSL2), so correlate on the container's PID namespace instead.
+    try:
+        tree.set_container_pid_ns(os.stat(f"/proc/{root_pid}/ns/pid").st_ino)
+    except OSError as error:
+        print(f"Warning: could not read container PID namespace ({error}); using PID ancestry.")
+        tree.set_root_pid(root_pid)
     
     print(f"Executing command: {cmd}")
     print(f"Sandbox Host PID: {root_pid}")
